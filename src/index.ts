@@ -17,6 +17,35 @@
 import { evaluate, DEFAULT_CONFIG, isFinancialTool, FINANCIAL_TOOLS } from "./firewall.js";
 import type { PlimsollConfig } from "./firewall.js";
 
+// ── Minimal type stubs matching OpenClaw's plugin API ────────────
+// These mirror the shapes from src/plugins/types.ts without importing
+// OpenClaw internals, so the plugin stays zero-dependency.
+
+interface BeforeToolCallEvent {
+  toolName: string;
+  params: Record<string, unknown>;
+}
+
+interface ToolContext {
+  agentId?: string;
+  sessionKey?: string;
+  toolName: string;
+}
+
+interface BeforeToolCallResult {
+  params?: Record<string, unknown>;
+  block?: boolean;
+  blockReason?: string;
+}
+
+interface AfterToolCallEvent {
+  toolName: string;
+  params: Record<string, unknown>;
+  result?: unknown;
+  error?: string;
+  durationMs?: number;
+}
+
 interface PluginApi {
   pluginConfig?: Record<string, unknown>;
   logger: {
@@ -24,10 +53,11 @@ interface PluginApi {
     warn?: (...args: unknown[]) => void;
     debug?: (...args: unknown[]) => void;
   };
-  registerHook: (
-    event: string,
-    handler: (context: Record<string, unknown>) => Promise<unknown>,
-    opts: { name: string; description: string },
+  /** Typed lifecycle hook registration — used for before_tool_call, after_tool_call, etc. */
+  on: (
+    hookName: string,
+    handler: (...args: any[]) => any,
+    opts?: { priority?: number },
   ) => void;
   registerCommand: (cmd: {
     name: string;
@@ -61,15 +91,15 @@ export default function register(api: PluginApi) {
   api.logger.info?.("Plimsoll Financial Guard: active");
 
   // ── Hook: before_tool_call ───────────────────────────────────
-  api.registerHook(
+  // Uses api.on() for typed plugin hooks (NOT api.registerHook which
+  // is for internal event hooks like command:new / message:received).
+  api.on(
     "before_tool_call",
-    async (context) => {
-      const toolName = (context.toolName ?? context.tool ?? "") as string;
-      if (!isFinancialTool(toolName)) return;
+    (event: BeforeToolCallEvent, ctx: ToolContext): BeforeToolCallResult | void => {
+      if (!isFinancialTool(event.toolName)) return;
 
-      const params = (context.params ?? context.args ?? {}) as Record<string, unknown>;
-      const sessionKey = String(context.sessionKey ?? context.agentId ?? "default");
-      const verdict = evaluate(sessionKey, toolName, params, config);
+      const sessionKey = ctx.sessionKey ?? ctx.agentId ?? "default";
+      const verdict = evaluate(sessionKey, event.toolName, event.params, config);
 
       if (verdict.blocked) {
         api.logger.warn?.(`PLIMSOLL BLOCK [${verdict.engine}]: ${verdict.reason}`);
@@ -85,30 +115,25 @@ export default function register(api: PluginApi) {
         api.logger.info?.(`PLIMSOLL FRICTION [${verdict.engine}]: ${verdict.reason}`);
         return {
           params: {
-            ...params,
+            ...event.params,
             _plimsoll_warning: verdict.reason,
           },
         };
       }
     },
-    {
-      name: "plimsoll-security.before-tool-call",
-      description: "Financial security guard — loop detection, velocity limits, credential defense, confirmation gates",
-    },
   );
 
   // ── Hook: after_tool_call (audit log) ─────────────────────────
-  api.registerHook(
+  api.on(
     "after_tool_call",
-    async (context) => {
-      const toolName = (context.toolName ?? context.tool ?? "") as string;
-      if (isFinancialTool(toolName)) {
-        api.logger.debug?.(`PLIMSOLL AUDIT: ${toolName} completed`);
+    (event: AfterToolCallEvent, _ctx: ToolContext): void => {
+      if (isFinancialTool(event.toolName)) {
+        api.logger.debug?.(
+          `PLIMSOLL AUDIT: ${event.toolName} completed` +
+          (event.durationMs != null ? ` (${event.durationMs}ms)` : "") +
+          (event.error ? ` [error: ${event.error}]` : ""),
+        );
       }
-    },
-    {
-      name: "plimsoll-security.after-tool-call",
-      description: "Audit log for completed financial tool calls",
     },
   );
 
