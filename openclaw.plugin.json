@@ -1,0 +1,56 @@
+{
+  "id": "plimsoll-security",
+  "name": "Plimsoll DeFi Security",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": {
+        "type": "boolean",
+        "default": true
+      },
+      "maxVelocityCentsPerWindow": {
+        "type": "number",
+        "default": 50000,
+        "description": "Maximum spend (in cents) allowed within the velocity window"
+      },
+      "velocityWindowSeconds": {
+        "type": "number",
+        "default": 300,
+        "description": "Sliding window duration in seconds for velocity enforcement"
+      },
+      "loopThreshold": {
+        "type": "number",
+        "default": 3,
+        "description": "Number of identical tool calls within the loop window that triggers a block"
+      },
+      "loopWindowSeconds": {
+        "type": "number",
+        "default": 60,
+        "description": "Sliding window duration in seconds for loop detection"
+      }
+    }
+  },
+  "uiHints": {
+    "enabled": {
+      "label": "Enable Plimsoll Protection",
+      "help": "Activate transaction security checks on DeFi tool calls"
+    },
+    "maxVelocityCentsPerWindow": {
+      "label": "Velocity Cap (cents)",
+      "help": "Maximum cumulative spend in a sliding window before hard block"
+    },
+    "velocityWindowSeconds": {
+      "label": "Velocity Window (seconds)",
+      "help": "Duration of the sliding window for spend-rate enforcement"
+    },
+    "loopThreshold": {
+      "label": "Loop Threshold",
+      "help": "Identical calls within the window before hard block"
+    },
+    "loopWindowSeconds": {
+      "label": "Loop Window (seconds)",
+      "help": "Duration of the sliding window for retry-loop detection"
+    }
+  }
+}

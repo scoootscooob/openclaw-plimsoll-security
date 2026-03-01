@@ -1,0 +1,38 @@
+{
+  "name": "openclaw-plimsoll-security",
+  "version": "1.0.0",
+  "description": "Transaction firewall for DeFi tool calls — loop detection, spend-rate limits, and exfiltration defense",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "openclaw",
+    "openclaw-plugin",
+    "defi",
+    "security",
+    "firewall",
+    "transaction-guard",
+    "plimsoll"
+  ],
+  "author": "scoootscooob",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/scoootscooob/openclaw-plimsoll-security"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.3",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}
