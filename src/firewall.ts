@@ -376,6 +376,93 @@ function evaluateAnomaly(
   return ALLOW;
 }
 
+// ─── Audit Trail (SHA-256 Hash Chain) ───────────────────────────
+
+export type AuditEntry = {
+  seq: number;
+  ts: number;
+  toolName: string;
+  code: string;
+  engine: string;
+  hash: string;
+  prevHash: string;
+};
+
+const GENESIS_HASH = "0000000000000000000000000000000000000000000000000000000000000000";
+
+const auditLogs = new Map<string, AuditEntry[]>();
+const MAX_AUDIT_ENTRIES = 200;
+
+function auditHash(seq: number, ts: number, toolName: string, code: string, prevHash: string): string {
+  const payload = `${seq}:${ts}:${toolName}:${code}:${prevHash}`;
+  return createHash("sha256").update(payload).digest("hex");
+}
+
+function appendAudit(
+  sessionKey: string,
+  toolName: string,
+  verdict: Verdict,
+): AuditEntry {
+  let log = auditLogs.get(sessionKey);
+  if (!log) {
+    if (auditLogs.size >= MAX_SESSIONS) {
+      const oldest = auditLogs.keys().next().value;
+      if (oldest !== undefined) auditLogs.delete(oldest);
+    }
+    log = [];
+    auditLogs.set(sessionKey, log);
+  }
+
+  const seq = log.length;
+  const ts = Date.now();
+  const prevHash = seq > 0 ? log[seq - 1].hash : GENESIS_HASH;
+  const hash = auditHash(seq, ts, toolName, verdict.code, prevHash);
+
+  const entry: AuditEntry = {
+    seq,
+    ts,
+    toolName,
+    code: verdict.code,
+    engine: verdict.engine || "none",
+    hash,
+    prevHash,
+  };
+
+  log.push(entry);
+  if (log.length > MAX_AUDIT_ENTRIES) {
+    log.shift();
+  }
+
+  return entry;
+}
+
+/** Get the audit log for a session. Returns a read-only copy. */
+export function getAuditLog(sessionKey: string): readonly AuditEntry[] {
+  return auditLogs.get(sessionKey) ?? [];
+}
+
+/** Verify the integrity of an audit chain. Returns the index of the first broken link, or -1 if valid. */
+export function verifyAuditChain(sessionKey: string): number {
+  const log = auditLogs.get(sessionKey);
+  if (!log || log.length === 0) return -1;
+
+  for (let i = 0; i < log.length; i++) {
+    const entry = log[i];
+    const expectedPrev = i === 0 ? GENESIS_HASH : log[i - 1].hash;
+    if (entry.prevHash !== expectedPrev) return i;
+
+    const expectedHash = auditHash(entry.seq, entry.ts, entry.toolName, entry.code, entry.prevHash);
+    if (entry.hash !== expectedHash) return i;
+  }
+
+  return -1;
+}
+
+/** Clear audit log for a session. For testing only. */
+export function clearAuditLog(sessionKey: string): void {
+  auditLogs.delete(sessionKey);
+}
+
 // ─── Public API ─────────────────────────────────────────────────
 
 /**
@@ -390,28 +477,30 @@ export function evaluate(
 ): Verdict {
   // Engine 1: Loop detection
   const trajectoryVerdict = evaluateTrajectory(sessionKey, toolName, params, config);
-  if (trajectoryVerdict.blocked) return trajectoryVerdict;
+  if (trajectoryVerdict.blocked) { appendAudit(sessionKey, toolName, trajectoryVerdict); return trajectoryVerdict; }
 
   // Engine 2: Spend rate
   const velocityVerdict = evaluateVelocity(sessionKey, params, config);
-  if (velocityVerdict.blocked) return velocityVerdict;
+  if (velocityVerdict.blocked) { appendAudit(sessionKey, toolName, velocityVerdict); return velocityVerdict; }
 
   // Engine 3: Credential exfiltration
   const entropyVerdict = evaluateEntropy(params);
-  if (entropyVerdict.blocked) return entropyVerdict;
+  if (entropyVerdict.blocked) { appendAudit(sessionKey, toolName, entropyVerdict); return entropyVerdict; }
 
   // Engine 4: High-value confirmation
   const confirmVerdict = evaluateConfirmation(params, config);
-  if (confirmVerdict.blocked) return confirmVerdict;
+  if (confirmVerdict.blocked) { appendAudit(sessionKey, toolName, confirmVerdict); return confirmVerdict; }
 
   // Engine 5: Amount anomaly (friction only, after blocks)
   const anomalyVerdict = evaluateAnomaly(sessionKey, params, config);
-  if (anomalyVerdict.friction) return anomalyVerdict;
+  if (anomalyVerdict.friction) { appendAudit(sessionKey, toolName, anomalyVerdict); return anomalyVerdict; }
 
   // Return friction from trajectory if raised
-  if (trajectoryVerdict.friction) return trajectoryVerdict;
+  if (trajectoryVerdict.friction) { appendAudit(sessionKey, toolName, trajectoryVerdict); return trajectoryVerdict; }
 
-  return ALLOW;
+  const result = ALLOW;
+  appendAudit(sessionKey, toolName, result);
+  return result;
 }
 
 export const DEFAULT_CONFIG: PlimsollConfig = {

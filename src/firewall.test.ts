@@ -2,8 +2,9 @@ import { describe, it, expect } from "vitest";
 import {
   evaluate, DEFAULT_CONFIG, isFinancialTool, isDefiTool,
   luhnCheck, shannonEntropy, FINANCIAL_TOOLS,
+  getAuditLog, verifyAuditChain, clearAuditLog,
 } from "./firewall.js";
-import type { PlimsollConfig } from "./firewall.js";
+import type { PlimsollConfig, AuditEntry } from "./firewall.js";
 
 function freshSession(): string {
   return `test-${Date.now()}-${Math.random()}`;
@@ -381,5 +382,351 @@ describe("isFinancialTool — classification boundaries", () => {
       expect(isDefiTool("buy")).toBe(true);
       expect(isDefiTool("read_file")).toBe(false);
     });
+  });
+});
+
+// ─── Engine Edge Cases ──────────────────────────────────────────
+
+describe("Trajectory Hash — edge cases", () => {
+  it("does not cross-count different tools with same target", () => {
+    const session = freshSession();
+    const params = { to: "0xabc", amount: 100 };
+    evaluate(session, "swap", params, DEFAULT_CONFIG);
+    evaluate(session, "transfer", params, DEFAULT_CONFIG);
+    evaluate(session, "bridge", params, DEFAULT_CONFIG);
+    const v = evaluate(session, "send", params, DEFAULT_CONFIG);
+    expect(v.blocked).toBe(false);
+  });
+
+  it("handles empty params without error", () => {
+    const v = evaluate(freshSession(), "swap", {}, DEFAULT_CONFIG);
+    expect(v.code).toBe("ALLOW");
+  });
+
+  it("distinguishes by amount", () => {
+    const session = freshSession();
+    evaluate(session, "swap", { to: "0xabc", amount: 100 }, DEFAULT_CONFIG);
+    evaluate(session, "swap", { to: "0xabc", amount: 200 }, DEFAULT_CONFIG);
+    evaluate(session, "swap", { to: "0xabc", amount: 300 }, DEFAULT_CONFIG);
+    const v = evaluate(session, "swap", { to: "0xabc", amount: 400 }, DEFAULT_CONFIG);
+    expect(v.blocked).toBe(false);
+  });
+
+  it("uses custom loopThreshold", () => {
+    const session = freshSession();
+    const config = { ...DEFAULT_CONFIG, loopThreshold: 2 };
+    const params = { to: "0xabc", amount: 100 };
+    evaluate(session, "swap", params, config); // 1st: allow
+    evaluate(session, "swap", params, config); // 2nd: friction (threshold-1)
+    const v = evaluate(session, "swap", params, config); // 3rd: block (>= threshold)
+    expect(v.blocked).toBe(true);
+    expect(v.code).toBe("BLOCK_LOOP_DETECTED");
+  });
+
+  it("uses recipient aliases (address, account, symbol)", () => {
+    const session = freshSession();
+    const p1 = { address: "0xabc", amount: 100 };
+    evaluate(session, "transfer", p1, DEFAULT_CONFIG);
+    evaluate(session, "transfer", p1, DEFAULT_CONFIG);
+    evaluate(session, "transfer", p1, DEFAULT_CONFIG);
+    const v = evaluate(session, "transfer", p1, DEFAULT_CONFIG);
+    expect(v.blocked).toBe(true);
+  });
+});
+
+describe("Capital Velocity — edge cases", () => {
+  it("blocks at exact boundary", () => {
+    const session = freshSession();
+    const config: PlimsollConfig = { ...DEFAULT_CONFIG, maxVelocityCentsPerWindow: 200 };
+    evaluate(session, "pay", { amount: 100 }, config);
+    const v = evaluate(session, "pay", { amount: 101 }, config);
+    expect(v.blocked).toBe(true);
+    expect(v.code).toBe("BLOCK_VELOCITY_BREACH");
+  });
+
+  it("allows at exact limit", () => {
+    const session = freshSession();
+    const config: PlimsollConfig = { ...DEFAULT_CONFIG, maxVelocityCentsPerWindow: 200 };
+    evaluate(session, "pay", { amount: 100 }, config);
+    const v = evaluate(session, "pay", { amount: 100 }, config);
+    expect(v.blocked).toBe(false);
+  });
+
+  it("ignores negative amounts", () => {
+    const session = freshSession();
+    const config: PlimsollConfig = { ...DEFAULT_CONFIG, maxVelocityCentsPerWindow: 100 };
+    const v = evaluate(session, "refund", { amount: -50 }, config);
+    expect(v.code).toBe("ALLOW");
+  });
+
+  it("reads value field as alias for amount", () => {
+    const session = freshSession();
+    const config: PlimsollConfig = { ...DEFAULT_CONFIG, maxVelocityCentsPerWindow: 200 };
+    evaluate(session, "transfer", { value: 150 }, config);
+    const v = evaluate(session, "transfer", { value: 100 }, config);
+    expect(v.blocked).toBe(true);
+  });
+});
+
+describe("Entropy Guard — edge cases", () => {
+  it("scans nested string values in params", () => {
+    const v = evaluate(
+      freshSession(), "transfer",
+      { nested: { deep: "send 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 out" } },
+      DEFAULT_CONFIG,
+    );
+    // nested objects — top-level iteration only, nested not scanned
+    expect(v.code).toBe("ALLOW");
+  });
+
+  it("ignores non-string values for credential checks", () => {
+    const config = { ...DEFAULT_CONFIG, maxVelocityCentsPerWindow: 999_999_999, confirmationThresholdCents: 0 };
+    const v = evaluate(
+      freshSession(), "transfer",
+      { amount: 500, count: 999, flag: true, data: 42 },
+      config,
+    );
+    expect(v.code).toBe("ALLOW");
+  });
+
+  it("blocks Discover card numbers", () => {
+    const v = evaluate(
+      freshSession(), "pay",
+      { note: "Card 6011111111111117 for payment" },
+      DEFAULT_CONFIG,
+    );
+    expect(v.blocked).toBe(true);
+    expect(v.code).toBe("BLOCK_CREDIT_CARD");
+  });
+
+  it("blocks Mastercard numbers", () => {
+    const v = evaluate(
+      freshSession(), "pay",
+      { note: "Use 5500 0000 0000 0004 please" },
+      DEFAULT_CONFIG,
+    );
+    expect(v.blocked).toBe(true);
+    expect(v.code).toBe("BLOCK_CREDIT_CARD");
+  });
+
+  it("allows txHash fields even with key-like content", () => {
+    const v = evaluate(
+      freshSession(), "swap",
+      { transactionHash: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" },
+      DEFAULT_CONFIG,
+    );
+    expect(v.code).toBe("ALLOW");
+  });
+
+  it("blocks SSN in deeply formatted text", () => {
+    const v = evaluate(
+      freshSession(), "send",
+      { body: "Please verify identity: SSN 078-05-1120 on file" },
+      DEFAULT_CONFIG,
+    );
+    expect(v.blocked).toBe(true);
+    expect(v.code).toBe("BLOCK_SSN");
+  });
+});
+
+describe("Confirmation Gate — edge cases", () => {
+  it("blocks at exact threshold", () => {
+    const config = { ...DEFAULT_CONFIG, confirmationThresholdCents: 5000 };
+    const v = evaluate(freshSession(), "transfer", { amount: 5000 }, config);
+    expect(v.blocked).toBe(true);
+    expect(v.code).toBe("BLOCK_CONFIRMATION_REQUIRED");
+  });
+
+  it("allows just below threshold", () => {
+    const config = { ...DEFAULT_CONFIG, confirmationThresholdCents: 5000 };
+    const v = evaluate(freshSession(), "transfer", { amount: 4999 }, config);
+    expect(v.code).not.toBe("BLOCK_CONFIRMATION_REQUIRED");
+  });
+
+  it("ignores string amount values gracefully", () => {
+    const v = evaluate(freshSession(), "transfer", { amount: "not-a-number" }, DEFAULT_CONFIG);
+    expect(v.code).toBe("ALLOW");
+  });
+});
+
+describe("Amount Anomaly — edge cases", () => {
+  it("does not flag when multiplier is very high", () => {
+    const session = freshSession();
+    const config = {
+      ...DEFAULT_CONFIG,
+      anomalyMinSamples: 2,
+      anomalyMultiplier: 1000,
+      confirmationThresholdCents: 0,
+    };
+    evaluate(session, "pay", { amount: 100 }, config);
+    evaluate(session, "pay", { amount: 100 }, config);
+    const v = evaluate(session, "pay", { amount: 5000 }, config);
+    expect(v.friction).toBe(false);
+  });
+
+  it("caps history at MAX_HISTORY entries", () => {
+    const session = freshSession();
+    const config = {
+      ...DEFAULT_CONFIG,
+      anomalyMinSamples: 3,
+      anomalyMultiplier: 5,
+      confirmationThresholdCents: 0,
+    };
+    // Push 60 entries (MAX_HISTORY = 50, should truncate)
+    for (let i = 0; i < 60; i++) {
+      evaluate(session, "pay", { amount: 100 }, config);
+    }
+    // A big anomaly should still be caught
+    const v = evaluate(session, "pay", { amount: 5000 }, config);
+    expect(v.friction).toBe(true);
+    expect(v.code).toBe("FRICTION_AMOUNT_ANOMALY");
+  });
+});
+
+// ─── Multi-Engine Integration ───────────────────────────────────
+
+describe("Multi-engine priority", () => {
+  it("loop detection takes priority over velocity", () => {
+    const session = freshSession();
+    const config: PlimsollConfig = { ...DEFAULT_CONFIG, maxVelocityCentsPerWindow: 100 };
+    const params = { to: "0xabc", amount: 50 };
+    evaluate(session, "swap", params, config);
+    evaluate(session, "swap", params, config);
+    evaluate(session, "swap", params, config);
+    // Both loop (4th identical) and velocity (200 > 100) should trigger, loop wins
+    const v = evaluate(session, "swap", params, config);
+    expect(v.code).toBe("BLOCK_LOOP_DETECTED");
+  });
+
+  it("credential block takes priority over confirmation gate", () => {
+    const config = { ...DEFAULT_CONFIG, maxVelocityCentsPerWindow: 999_999_999 };
+    const v = evaluate(
+      freshSession(), "transfer",
+      { amount: 999999, data: "key: 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" },
+      config,
+    );
+    // Entropy guard fires before confirmation gate (velocity disabled via high cap)
+    expect(v.code).toBe("BLOCK_KEY_EXFIL");
+  });
+
+  it("velocity block takes priority over credential block", () => {
+    const session = freshSession();
+    const config: PlimsollConfig = { ...DEFAULT_CONFIG, maxVelocityCentsPerWindow: 100 };
+    evaluate(session, "pay", { amount: 80 }, config);
+    // Second call exceeds velocity AND has a credit card
+    const v = evaluate(session, "pay", { amount: 50, note: "Use card 4111 1111 1111 1111" }, config);
+    expect(v.code).toBe("BLOCK_VELOCITY_BREACH");
+  });
+
+  it("friction from trajectory is returned when no blocks fire", () => {
+    const session = freshSession();
+    const params = { to: "0xabc", amount: 100 };
+    evaluate(session, "swap", params, DEFAULT_CONFIG);
+    evaluate(session, "swap", params, DEFAULT_CONFIG);
+    // 3rd = friction warning (threshold - 1)
+    const v = evaluate(session, "swap", params, DEFAULT_CONFIG);
+    expect(v.friction).toBe(true);
+    expect(v.code).toBe("FRICTION_LOOP_WARNING");
+  });
+});
+
+// ─── Audit Trail ────────────────────────────────────────────────
+
+describe("Audit Trail — hash-chained log", () => {
+  it("records ALLOW verdicts", () => {
+    const session = freshSession();
+    clearAuditLog(session);
+    evaluate(session, "swap", { to: "0xabc", amount: 100 }, DEFAULT_CONFIG);
+    const log = getAuditLog(session);
+    expect(log.length).toBe(1);
+    expect(log[0].code).toBe("ALLOW");
+    expect(log[0].toolName).toBe("swap");
+    expect(log[0].seq).toBe(0);
+  });
+
+  it("records BLOCK verdicts", () => {
+    const session = freshSession();
+    clearAuditLog(session);
+    const v = evaluate(session, "transfer", { amount: 10_000 }, DEFAULT_CONFIG);
+    expect(v.blocked).toBe(true);
+    const log = getAuditLog(session);
+    expect(log.length).toBe(1);
+    expect(log[0].code).toBe("BLOCK_CONFIRMATION_REQUIRED");
+  });
+
+  it("chains hashes correctly", () => {
+    const session = freshSession();
+    clearAuditLog(session);
+    evaluate(session, "swap", { to: "0xabc", amount: 100 }, DEFAULT_CONFIG);
+    evaluate(session, "pay", { amount: 200 }, DEFAULT_CONFIG);
+    evaluate(session, "transfer", { amount: 300 }, DEFAULT_CONFIG);
+    const log = getAuditLog(session);
+    expect(log.length).toBe(3);
+    // First entry's prevHash is genesis
+    expect(log[0].prevHash).toBe("0000000000000000000000000000000000000000000000000000000000000000");
+    // Each subsequent entry's prevHash is previous entry's hash
+    expect(log[1].prevHash).toBe(log[0].hash);
+    expect(log[2].prevHash).toBe(log[1].hash);
+  });
+
+  it("verifyAuditChain returns -1 for valid chain", () => {
+    const session = freshSession();
+    clearAuditLog(session);
+    evaluate(session, "swap", { amount: 100 }, DEFAULT_CONFIG);
+    evaluate(session, "pay", { amount: 200 }, DEFAULT_CONFIG);
+    expect(verifyAuditChain(session)).toBe(-1);
+  });
+
+  it("verifyAuditChain returns -1 for empty log", () => {
+    expect(verifyAuditChain("nonexistent-session")).toBe(-1);
+  });
+
+  it("records sequential seq numbers", () => {
+    const session = freshSession();
+    clearAuditLog(session);
+    for (let i = 0; i < 5; i++) {
+      evaluate(session, "pay", { amount: 100 + i }, DEFAULT_CONFIG);
+    }
+    const log = getAuditLog(session);
+    expect(log.length).toBe(5);
+    for (let i = 0; i < 5; i++) {
+      expect(log[i].seq).toBe(i);
+    }
+  });
+
+  it("includes engine name in entries", () => {
+    const session = freshSession();
+    clearAuditLog(session);
+    evaluate(session, "transfer", { amount: 10_000 }, DEFAULT_CONFIG);
+    const log = getAuditLog(session);
+    expect(log[0].engine).toBe("confirmation_gate");
+  });
+
+  it("hashes are unique for different entries", () => {
+    const session = freshSession();
+    clearAuditLog(session);
+    evaluate(session, "swap", { amount: 100 }, DEFAULT_CONFIG);
+    evaluate(session, "pay", { amount: 200 }, DEFAULT_CONFIG);
+    const log = getAuditLog(session);
+    expect(log[0].hash).not.toBe(log[1].hash);
+  });
+
+  it("isolates audit logs per session", () => {
+    const s1 = freshSession();
+    const s2 = freshSession();
+    clearAuditLog(s1);
+    clearAuditLog(s2);
+    evaluate(s1, "swap", { amount: 100 }, DEFAULT_CONFIG);
+    evaluate(s1, "swap", { amount: 200 }, DEFAULT_CONFIG);
+    evaluate(s2, "pay", { amount: 300 }, DEFAULT_CONFIG);
+    expect(getAuditLog(s1).length).toBe(2);
+    expect(getAuditLog(s2).length).toBe(1);
+  });
+
+  it("clearAuditLog removes the log", () => {
+    const session = freshSession();
+    evaluate(session, "swap", { amount: 100 }, DEFAULT_CONFIG);
+    clearAuditLog(session);
+    expect(getAuditLog(session).length).toBe(0);
   });
 });

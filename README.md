@@ -1,6 +1,6 @@
 # openclaw-plimsoll-security
 
-Financial security guard for OpenClaw agents. Protects any agent that handles money — crypto, stocks, purchases, bank transfers, credit cards. Five deterministic defense engines, zero dependencies, fail-closed.
+Financial security guard for OpenClaw agents. Protects any agent that handles money — crypto, stocks, purchases, bank transfers, credit cards. Five deterministic defense engines plus a tamper-evident audit trail, zero dependencies, fail-closed.
 
 ## Install
 
@@ -74,9 +74,16 @@ Each tool call gets one of three verdicts:
 - **FRICTION** — inject `_plimsoll_warning` into params, let agent decide
 - **BLOCK** — hard stop with reason, agent told to pivot strategy
 
+## Audit Trail
+
+Every tool call verdict is recorded in a SHA-256 hash-chained audit log. Each entry includes the previous entry's hash, creating a tamper-evident chain — if any entry is modified or deleted, the chain breaks and `verifyAuditChain` reports the first broken link.
+
+- `/plimsoll` shows live audit stats (entries, blocks, frictions, chain integrity)
+- Programmatic access via `getAuditLog(sessionKey)` and `verifyAuditChain(sessionKey)`
+
 ## Commands
 
-- `/plimsoll` — Show guard status and current configuration
+- `/plimsoll` — Show guard status, configuration, and audit trail stats
 
 ## Development
 

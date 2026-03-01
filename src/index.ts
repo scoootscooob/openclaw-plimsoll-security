@@ -14,7 +14,7 @@
  * Docs:    https://github.com/scoootscooob/openclaw-plimsoll-security
  */
 
-import { evaluate, DEFAULT_CONFIG, isFinancialTool, FINANCIAL_TOOLS } from "./firewall.js";
+import { evaluate, DEFAULT_CONFIG, isFinancialTool, FINANCIAL_TOOLS, getAuditLog, verifyAuditChain } from "./firewall.js";
 import type { PlimsollConfig } from "./firewall.js";
 
 // ── Minimal type stubs matching OpenClaw's plugin API ────────────
@@ -142,17 +142,26 @@ export default function register(api: PluginApi) {
     name: "plimsoll",
     description: "Show Plimsoll financial guard status",
     requireAuth: true,
-    handler: () => ({
-      text:
-        `**Plimsoll Financial Guard** — active\n\n` +
-        `**Engines:**\n` +
-        `- Loop detection: ${config.loopThreshold} identical calls / ${config.loopWindowSeconds}s\n` +
-        `- Velocity cap: $${(config.maxVelocityCentsPerWindow / 100).toFixed(2)} / ${config.velocityWindowSeconds}s\n` +
-        `- Credential guard: ETH keys, mnemonics, credit cards, SSNs, Stripe/Plaid keys\n` +
-        `- Confirmation gate: $${(config.confirmationThresholdCents / 100).toFixed(2)} per-tx threshold\n` +
-        `- Anomaly detection: ${config.anomalyMultiplier}x rolling average (after ${config.anomalyMinSamples} samples)\n\n` +
-        `**Guarded tools:** ${Array.from(FINANCIAL_TOOLS).join(", ")}\n\n` +
-        `_Powered by [Plimsoll Protocol](https://github.com/scoootscooob/plimsoll-protocol)_`,
-    }),
+    handler: (ctx) => {
+      const sessionKey = String((ctx as Record<string, unknown>).sessionKey ?? "default");
+      const log = getAuditLog(sessionKey);
+      const chainStatus = verifyAuditChain(sessionKey);
+      const blocks = log.filter((e) => e.code.startsWith("BLOCK_")).length;
+      const frictions = log.filter((e) => e.code.startsWith("FRICTION_")).length;
+
+      return {
+        text:
+          `**Plimsoll Financial Guard** — active\n\n` +
+          `**Engines:**\n` +
+          `- Loop detection: ${config.loopThreshold} identical calls / ${config.loopWindowSeconds}s\n` +
+          `- Velocity cap: $${(config.maxVelocityCentsPerWindow / 100).toFixed(2)} / ${config.velocityWindowSeconds}s\n` +
+          `- Credential guard: ETH keys, mnemonics, credit cards, SSNs, Stripe/Plaid keys\n` +
+          `- Confirmation gate: $${(config.confirmationThresholdCents / 100).toFixed(2)} per-tx threshold\n` +
+          `- Anomaly detection: ${config.anomalyMultiplier}x rolling average (after ${config.anomalyMinSamples} samples)\n\n` +
+          `**Audit trail:** ${log.length} entries | ${blocks} blocks | ${frictions} frictions | chain ${chainStatus === -1 ? "valid" : `BROKEN at #${chainStatus}`}\n\n` +
+          `**Guarded tools:** ${Array.from(FINANCIAL_TOOLS).join(", ")}\n\n` +
+          `_Powered by [Plimsoll Protocol](https://github.com/scoootscooob/plimsoll-protocol)_`,
+      };
+    },
   });
 }
