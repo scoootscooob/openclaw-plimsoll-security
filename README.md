@@ -1,6 +1,6 @@
 # openclaw-plimsoll-security
 
-Transaction firewall for OpenClaw agents that handle DeFi operations. Intercepts tool calls (`swap`, `transfer`, `bridge`, etc.) and runs them through three deterministic defense engines before execution.
+Financial security guard for OpenClaw agents. Protects any agent that handles money — crypto, stocks, purchases, bank transfers, credit cards. Five deterministic defense engines, zero dependencies, fail-closed.
 
 ## Install
 
@@ -8,17 +8,28 @@ Transaction firewall for OpenClaw agents that handle DeFi operations. Intercepts
 openclaw plugins install openclaw-plimsoll-security
 ```
 
-## What it does
+## Engines
 
 | Engine | Catches | How |
 |--------|---------|-----|
 | **Trajectory Hash** | Hallucination retry loops | SHA-256 fingerprint of (tool, target, amount). 3+ identical calls in 60s = hard block. |
 | **Capital Velocity** | Spend-rate abuse | Sliding-window cap. Cumulative spend > $500 in 5 min = hard block. |
-| **Entropy Guard** | Private key exfiltration | Regex + Shannon entropy. Blocks ETH keys, BIP-39 mnemonics, high-entropy blobs in tool params. |
+| **Entropy Guard** | Credential exfiltration | Blocks ETH private keys, BIP-39 mnemonics, credit card numbers (Luhn-validated), SSNs, Stripe/Plaid API keys, high-entropy blobs. |
+| **Confirmation Gate** | Unauthorized large transactions | Per-transaction threshold. Single tx > $100 = hard block requiring human approval. |
+| **Amount Anomaly** | Unusual spending patterns | Flags transactions 10x+ above rolling average. Catches prompt injection that inflates amounts. |
 
-All engines are **deterministic** (no LLM calls), **zero-dependency** (only `node:crypto`), and **fail-closed** (blocks if uncertain).
+All engines are **deterministic** (no LLM calls), **zero-dependency** (only `node:crypto`), and **fail-closed**.
 
-Non-DeFi tools pass through untouched.
+Non-financial tools pass through untouched.
+
+## What it protects
+
+- **Crypto/DeFi** — swap, transfer, bridge, stake, approve, etc.
+- **Stock trading** — buy, sell, place_order, market_order, limit_order
+- **Payments** — pay, purchase, checkout, charge, subscribe
+- **Banking** — wire_transfer, ach_transfer, send_money, bank_transfer
+
+Plus keyword fallback: any tool with `swap`, `transfer`, `bridge`, `buy`, `sell`, `pay`, `purchase`, `charge`, `order`, `wire`, or `send` as a standalone segment (e.g., `token_swap` matches, `swapfile` does not).
 
 ## Configuration
 
@@ -34,7 +45,10 @@ All settings are optional — defaults are conservative:
           "maxVelocityCentsPerWindow": 50000,
           "velocityWindowSeconds": 300,
           "loopThreshold": 3,
-          "loopWindowSeconds": 60
+          "loopWindowSeconds": 60,
+          "confirmationThresholdCents": 10000,
+          "anomalyMultiplier": 10,
+          "anomalyMinSamples": 5
         }
       }
     }
@@ -48,31 +62,21 @@ All settings are optional — defaults are conservative:
 | `velocityWindowSeconds` | `300` (5 min) | Sliding window duration |
 | `loopThreshold` | `3` | Identical calls before hard block |
 | `loopWindowSeconds` | `60` (1 min) | Loop detection window |
+| `confirmationThresholdCents` | `10000` ($100) | Per-tx amount requiring human approval. Set to `0` to disable. |
+| `anomalyMultiplier` | `10` | Flag txs this many times above rolling avg |
+| `anomalyMinSamples` | `5` | Min transactions before anomaly detection activates |
+
+## Verdicts
+
+Each tool call gets one of three verdicts:
+
+- **ALLOW** — pass through, no action
+- **FRICTION** — inject `_plimsoll_warning` into params, let agent decide
+- **BLOCK** — hard stop with reason, agent told to pivot strategy
 
 ## Commands
 
-- `/plimsoll` — Show firewall status and current configuration
-
-## How it works
-
-The plugin registers a `before_tool_call` hook. When a DeFi tool is called:
-
-1. **Tool classification** — Two-tier: exact match against known DeFi tools, then segment-aware keyword regex for plugin-registered tools (e.g., `token_swap`, `cross_chain_bridge`).
-
-2. **Three engines evaluate in order** — first block wins:
-   - Trajectory Hash checks for repeated identical calls
-   - Capital Velocity checks cumulative spend rate
-   - Entropy Guard scans string parameters for secrets
-
-3. **Verdict** — `ALLOW` (pass through), `FRICTION` (inject warning, let agent decide), or `BLOCK` (hard stop with reason).
-
-State is per-session (keyed by `sessionKey`) with LRU eviction at 1000 sessions. One agent's activity never affects another.
-
-## Guarded tools
-
-Exact matches: `swap`, `transfer`, `approve`, `bridge`, `stake`, `unstake`, `deposit`, `withdraw`, `borrow`, `repay`, `lend`, `supply`, `send`, `send_transaction`
-
-Keyword fallback matches tools with `swap`, `transfer`, or `bridge` as standalone segments (e.g., `token_swap` matches, `swapfile` does not).
+- `/plimsoll` — Show guard status and current configuration
 
 ## Development
 

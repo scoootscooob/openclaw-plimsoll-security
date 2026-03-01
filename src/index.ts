@@ -1,24 +1,22 @@
 /**
- * Plimsoll DeFi Security — Third-Party OpenClaw Plugin
+ * Plimsoll Financial Guard — Third-Party OpenClaw Plugin
  *
- * Transaction firewall for agents that handle financial operations.
- * Intercepts DeFi tool calls via before_tool_call and runs them
- * through three defense engines from the Plimsoll Protocol:
+ * Protects any agent that handles money: crypto, stocks, purchases,
+ * bank transfers, credit cards. Five deterministic defense engines:
  *
- *   1. Trajectory Hash  — blocks hallucination retry loops
- *   2. Capital Velocity — enforces spend-rate limits
- *   3. Entropy Guard    — blocks private key exfiltration
- *
- * All engines are deterministic, zero-dependency, and fail-closed.
+ *   1. Trajectory Hash      — blocks hallucination retry loops
+ *   2. Capital Velocity     — enforces spend-rate limits
+ *   3. Entropy Guard        — blocks credential exfiltration
+ *   4. Confirmation Gate    — requires approval for high-value txs
+ *   5. Amount Anomaly       — flags statistical outliers
  *
  * Install: openclaw plugins install openclaw-plimsoll-security
  * Docs:    https://github.com/scoootscooob/openclaw-plimsoll-security
  */
 
-import { evaluate, DEFAULT_CONFIG, isDefiTool, DEFI_TOOLS } from "./firewall.js";
+import { evaluate, DEFAULT_CONFIG, isFinancialTool, FINANCIAL_TOOLS } from "./firewall.js";
 import type { PlimsollConfig } from "./firewall.js";
 
-// Minimal type for the plugin API — avoids hard dependency on OpenClaw internals
 interface PluginApi {
   pluginConfig?: Record<string, unknown>;
   logger: {
@@ -43,7 +41,7 @@ export default function register(api: PluginApi) {
   const pluginCfg = (api.pluginConfig ?? {}) as Partial<PlimsollConfig & { enabled: boolean }>;
 
   if (pluginCfg.enabled === false) {
-    api.logger.info?.("Plimsoll Security: disabled via config");
+    api.logger.info?.("Plimsoll Financial Guard: disabled via config");
     return;
   }
 
@@ -54,16 +52,20 @@ export default function register(api: PluginApi) {
       pluginCfg.velocityWindowSeconds ?? DEFAULT_CONFIG.velocityWindowSeconds,
     loopThreshold: pluginCfg.loopThreshold ?? DEFAULT_CONFIG.loopThreshold,
     loopWindowSeconds: pluginCfg.loopWindowSeconds ?? DEFAULT_CONFIG.loopWindowSeconds,
+    confirmationThresholdCents:
+      pluginCfg.confirmationThresholdCents ?? DEFAULT_CONFIG.confirmationThresholdCents,
+    anomalyMultiplier: pluginCfg.anomalyMultiplier ?? DEFAULT_CONFIG.anomalyMultiplier,
+    anomalyMinSamples: pluginCfg.anomalyMinSamples ?? DEFAULT_CONFIG.anomalyMinSamples,
   };
 
-  api.logger.info?.("Plimsoll Security: active");
+  api.logger.info?.("Plimsoll Financial Guard: active");
 
   // ── Hook: before_tool_call ───────────────────────────────────
   api.registerHook(
     "before_tool_call",
     async (context) => {
       const toolName = (context.toolName ?? context.tool ?? "") as string;
-      if (!isDefiTool(toolName)) return;
+      if (!isFinancialTool(toolName)) return;
 
       const params = (context.params ?? context.args ?? {}) as Record<string, unknown>;
       const sessionKey = String(context.sessionKey ?? context.agentId ?? "default");
@@ -74,7 +76,7 @@ export default function register(api: PluginApi) {
         return {
           block: true,
           blockReason:
-            `[PLIMSOLL OVERRIDE] ${verdict.code}: ${verdict.reason} ` +
+            `[PLIMSOLL] ${verdict.code}: ${verdict.reason} ` +
             `Do not retry. Pivot strategy.`,
         };
       }
@@ -91,7 +93,7 @@ export default function register(api: PluginApi) {
     },
     {
       name: "plimsoll-security.before-tool-call",
-      description: "DeFi transaction firewall — loop detection, velocity limits, exfiltration defense",
+      description: "Financial security guard — loop detection, velocity limits, credential defense, confirmation gates",
     },
   );
 
@@ -100,28 +102,31 @@ export default function register(api: PluginApi) {
     "after_tool_call",
     async (context) => {
       const toolName = (context.toolName ?? context.tool ?? "") as string;
-      if (isDefiTool(toolName)) {
+      if (isFinancialTool(toolName)) {
         api.logger.debug?.(`PLIMSOLL AUDIT: ${toolName} completed`);
       }
     },
     {
       name: "plimsoll-security.after-tool-call",
-      description: "Audit log for completed DeFi tool calls",
+      description: "Audit log for completed financial tool calls",
     },
   );
 
   // ── Command: /plimsoll ──────────────────────────────────────
   api.registerCommand({
     name: "plimsoll",
-    description: "Show Plimsoll firewall status and configuration",
+    description: "Show Plimsoll financial guard status",
     requireAuth: true,
     handler: () => ({
       text:
-        `**Plimsoll DeFi Security** — active\n\n` +
+        `**Plimsoll Financial Guard** — active\n\n` +
+        `**Engines:**\n` +
+        `- Loop detection: ${config.loopThreshold} identical calls / ${config.loopWindowSeconds}s\n` +
         `- Velocity cap: $${(config.maxVelocityCentsPerWindow / 100).toFixed(2)} / ${config.velocityWindowSeconds}s\n` +
-        `- Loop threshold: ${config.loopThreshold} identical calls / ${config.loopWindowSeconds}s\n` +
-        `- Entropy guard: enabled\n` +
-        `- Guarded tools: ${Array.from(DEFI_TOOLS).join(", ")}\n\n` +
+        `- Credential guard: ETH keys, mnemonics, credit cards, SSNs, Stripe/Plaid keys\n` +
+        `- Confirmation gate: $${(config.confirmationThresholdCents / 100).toFixed(2)} per-tx threshold\n` +
+        `- Anomaly detection: ${config.anomalyMultiplier}x rolling average (after ${config.anomalyMinSamples} samples)\n\n` +
+        `**Guarded tools:** ${Array.from(FINANCIAL_TOOLS).join(", ")}\n\n` +
         `_Powered by [Plimsoll Protocol](https://github.com/scoootscooob/plimsoll-protocol)_`,
     }),
   });

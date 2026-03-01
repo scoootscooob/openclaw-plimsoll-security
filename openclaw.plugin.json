@@ -1,6 +1,6 @@
 {
   "id": "plimsoll-security",
-  "name": "Plimsoll DeFi Security",
+  "name": "Plimsoll Financial Guard",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -12,7 +12,7 @@
       "maxVelocityCentsPerWindow": {
         "type": "number",
         "default": 50000,
-        "description": "Maximum spend (in cents) allowed within the velocity window"
+        "description": "Maximum cumulative spend (in cents) within the velocity window"
       },
       "velocityWindowSeconds": {
         "type": "number",
@@ -22,35 +22,60 @@
       "loopThreshold": {
         "type": "number",
         "default": 3,
-        "description": "Number of identical tool calls within the loop window that triggers a block"
+        "description": "Number of identical tool calls before hard block"
       },
       "loopWindowSeconds": {
         "type": "number",
         "default": 60,
         "description": "Sliding window duration in seconds for loop detection"
+      },
+      "confirmationThresholdCents": {
+        "type": "number",
+        "default": 10000,
+        "description": "Per-transaction amount (in cents) that requires human confirmation. Set to 0 to disable."
+      },
+      "anomalyMultiplier": {
+        "type": "number",
+        "default": 10,
+        "description": "Multiplier over rolling average that triggers anomaly friction"
+      },
+      "anomalyMinSamples": {
+        "type": "number",
+        "default": 5,
+        "description": "Minimum transaction count before anomaly detection activates"
       }
     }
   },
   "uiHints": {
     "enabled": {
-      "label": "Enable Plimsoll Protection",
-      "help": "Activate transaction security checks on DeFi tool calls"
+      "label": "Enable Protection",
+      "help": "Activate financial security checks on tool calls"
     },
     "maxVelocityCentsPerWindow": {
       "label": "Velocity Cap (cents)",
       "help": "Maximum cumulative spend in a sliding window before hard block"
     },
     "velocityWindowSeconds": {
-      "label": "Velocity Window (seconds)",
-      "help": "Duration of the sliding window for spend-rate enforcement"
+      "label": "Velocity Window (seconds)"
     },
     "loopThreshold": {
       "label": "Loop Threshold",
       "help": "Identical calls within the window before hard block"
     },
     "loopWindowSeconds": {
-      "label": "Loop Window (seconds)",
-      "help": "Duration of the sliding window for retry-loop detection"
+      "label": "Loop Window (seconds)"
+    },
+    "confirmationThresholdCents": {
+      "label": "Confirmation Threshold (cents)",
+      "help": "Single-transaction amount requiring human approval. 0 = disabled."
+    },
+    "anomalyMultiplier": {
+      "label": "Anomaly Multiplier",
+      "help": "Flag transactions this many times above the rolling average"
+    },
+    "anomalyMinSamples": {
+      "label": "Anomaly Min Samples",
+      "help": "Transactions before anomaly detection kicks in"
     }
   }
 }
