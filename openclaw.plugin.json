@@ -1,6 +1,9 @@
 {
   "id": "plimsoll-security",
   "name": "Plimsoll Financial Guard",
+  "kind": "context-engine",
+  "description": "Deterministic financial security firewall for AI agents handling money. Five engines: loop detection, spend-rate limits, credential exfiltration defense, high-value confirmation gates, and amount anomaly detection. Zero-dependency, fail-closed.",
+  "version": "2.2.0",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
